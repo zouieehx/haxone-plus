@@ -291,4 +291,32 @@ function sweepBans(now) {
   return n;
 }
 
-module.exports = { normNick, get, isActive, upsert, deactivate, deactivateByDiscordId, list, sweepExpired, keyForDiscord, getByDiscordId, upsertByDiscordId, createLinkCode, getLinkCode, banAlive, banNick, unbanNick, banId, unbanId, banStatus, sweepBans };
+// Registro de vinculaciones (seguridad: quien/desde donde). Tope 200.
+function logLink({ discordId, username, ip, country, city }) {
+  try {
+    if (!db.links_log || !Array.isArray(db.links_log)) db.links_log = [];
+    db.links_log.unshift({
+      discordId: String(discordId || ''),
+      username: String(username || ''),
+      ip: String(ip || ''),
+      country: String(country || ''),
+      city: String(city || ''),
+      at: Date.now()
+    });
+    if (db.links_log.length > 200) db.links_log.length = 200;
+    save(db);
+    return true;
+  } catch (e) { return false; }
+}
+
+function getLinks({ discordId, limit } = {}) {
+  try {
+    if (!db.links_log || !Array.isArray(db.links_log)) return [];
+    let out = db.links_log;
+    if (discordId) out = out.filter((r) => r && String(r.discordId) === String(discordId));
+    const n = Math.max(1, Math.min(25, parseInt(limit, 10) || 10));
+    return out.slice(0, n);
+  } catch (e) { return []; }
+}
+
+module.exports = { normNick, get, isActive, upsert, deactivate, deactivateByDiscordId, list, sweepExpired, keyForDiscord, getByDiscordId, upsertByDiscordId, createLinkCode, getLinkCode, banAlive, banNick, unbanNick, banId, unbanId, banStatus, sweepBans, logLink, getLinks };

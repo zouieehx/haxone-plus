@@ -61,15 +61,61 @@ function createServer(store) {
   });
 
   // Valida un codigo de vinculo y devuelve a quien pertenece.
+  // Registra desde donde se vinculo (IP/pais, seguridad). No frena la
+  // respuesta: la geolocalizacion corre en segundo plano.
   app.get('/plus/link', (req, res) => {
     try {
       const c = store.getLinkCode((req.query && req.query.code) || '');
       if (!c || !c.discordId) return res.json({ ok: false });
       res.json({ ok: true, discordId: c.discordId, username: c.username || '' });
+      try {
+        const ip = reqIp(req);
+        geoIp(ip).then((g) => {
+          try {
+            store.logLink({
+              discordId: c.discordId, username: c.username || '',
+              ip: ip || '', country: (g && g.country) || '', city: (g && g.city) || ''
+            });
+          } catch (e) {}
+        }).catch(() => {});
+      } catch (e) {}
     } catch (e) {
-      res.json({ ok: false });
+      try { res.json({ ok: false }); } catch (e2) {}
     }
   });
+
+  function reqIp(req) {
+    try {
+      const f = req.headers && req.headers['x-forwarded-for'];
+      if (f) return String(f).split(',')[0].trim();
+      if (req.ip) return String(req.ip);
+      if (req.connection && req.connection.remoteAddress) return String(req.connection.remoteAddress);
+    } catch (e) {}
+    return '';
+  }
+
+  async function geoIp(ip) {
+    try {
+      const clean = String(ip || '').split(',')[0].trim();
+      if (!clean) return null;
+      if (/^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|::1|fc00:|fe80:)/i.test(clean)) {
+        return { country: 'local', city: '' };
+      }
+      const ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+      const to = setTimeout(() => { try { if (ctl) ctl.abort(); } catch (e) {} }, 3500);
+      try {
+        const r = await fetch('http://ip-api.com/json/' + encodeURIComponent(clean) + '?fields=status,country,city,query', {
+          signal: ctl ? ctl.signal : undefined
+        });
+        if (!r.ok) return null;
+        const j = await r.json();
+        if (j && j.status === 'ok') return { country: String(j.country || ''), city: String(j.city || '') };
+      } finally {
+        try { clearTimeout(to); } catch (e) {}
+      }
+    } catch (e) {}
+    return null;
+  }
 
   function selfBase(req) {
     try {
@@ -145,7 +191,7 @@ function createServer(store) {
       if (!uj || !uj.id) return res.status(400).send(oauthPage('Error', '', 'No se pudo leer tu Discord.'));
       const linkCode = store.createLinkCode(uj.id, uj.username || '');
       if (!linkCode) return res.status(500).send(oauthPage('Error', '', 'Intentalo de nuevo.'));
-      res.send(oauthPage('Cuenta vinculada', linkCode, 'Copiá este código y pegalo en HaxOne (pestaña Plus → Vincular con Discord → Verificar).'));
+      res.send(oauthPage('Cuenta vinculada', linkCode, 'Copiá este código y pegalo en HaxOne para vincularte.'));
     } catch (e) {
       res.status(500).send(oauthPage('Error', '', 'Intentalo de nuevo.'));
     }

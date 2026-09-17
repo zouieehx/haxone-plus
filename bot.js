@@ -15,6 +15,8 @@
 //       Bloquea la app (no puede entrar a jugar). Por cuenta y/o nick.
 //   /unblacklist [usuario] [nick]
 //       Quita el bloqueo.
+//   /vinculados [usuario]
+//       Cuentas vinculadas a la app con IP/pais (seguridad).
 // Flujo de cobro manual: te pagan por tu alias, vos corres /addplus y listo.
 // Cuando el Plus vence (si pusiste dias), el bot solo le saca el rol y la
 // app se le bloquea sola en la proxima verificacion.
@@ -63,6 +65,12 @@ const COMMANDS = [
     .setDescription('Desbloquear a alguien de la app')
     .addUserOption(o => o.setName('usuario').setDescription('Por cuenta de Discord (@)').setRequired(false))
     .addStringOption(o => o.setName('nick').setDescription('Por nick de HaxBall').setRequired(false))
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('vinculados')
+    .setDescription('Ver cuentas vinculadas a la app (IP/pais, seguridad)')
+    .addUserOption(o => o.setName('usuario').setDescription('Filtrar por persona (@)').setRequired(false))
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .toJSON()
 ];
@@ -126,6 +134,7 @@ async function startBot(store) {
       else if (name === 'pluslist') await cmdPlusList(interaction, store);
       else if (name === 'blacklist') await cmdBlacklist(interaction, store);
       else if (name === 'unblacklist') await cmdUnblacklist(interaction, store);
+      else if (name === 'vinculados') await cmdVinculados(interaction, store);
     } catch (e) {
       try {
         if (interaction.deferred || interaction.replied) await interaction.followUp({ content: 'Error interno.', ephemeral: true });
@@ -297,6 +306,34 @@ async function cmdUnblacklist(interaction, store) {
   }
 }
 
+function fmtDate(ts) {
+  try {
+    const d = new Date(ts);
+    return d.toLocaleDateString('es-AR') + ' ' + d.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
+  } catch (e) { return ''; }
+}
+
+async function cmdVinculados(interaction, store) {
+  let user = null;
+  try { user = interaction.options.getUser('usuario', false); } catch (e) { user = null; }
+  await interaction.deferReply({ ephemeral: true });
+  try {
+    const rows = store.getLinks({ discordId: user ? String(user.id) : '', limit: 10 });
+    if (!rows.length) {
+      await interaction.editReply(user ? 'Esa cuenta todavia no se vinculo.' : 'Nadie se vinculo todavia.');
+      return;
+    }
+    const lines = rows.map((r) => {
+      const who = (r.username ? '@' + r.username : r.discordId) || '?';
+      const where = [r.city, r.country].filter(Boolean).join(', ') || 'desconocido';
+      return '`' + who + '` — ' + (r.ip || 'sin IP') + ' — ' + where + ' — ' + fmtDate(r.at);
+    });
+    await interaction.editReply('**Vinculados (' + rows.length + '):**\n' + lines.join('\n'));
+  } catch (e) {
+    await interaction.editReply('Error: ' + (e && e.message ? e.message : e));
+  }
+}
+
 async function sweepAndClean(client, store, plusRoleId) {
   try { store.sweepBans(Date.now()); } catch (e) {}
   try {
@@ -317,4 +354,4 @@ async function sweepAndClean(client, store, plusRoleId) {
   } catch (e) {}
 }
 
-module.exports = { startBot, cmdAddPlus, cmdRemovePlus, cmdPlusInfo, cmdPlusList, cmdBlacklist, cmdUnblacklist, isAdmin, fmtUntil, COMMANDS };
+module.exports = { startBot, cmdAddPlus, cmdRemovePlus, cmdPlusInfo, cmdPlusList, cmdBlacklist, cmdUnblacklist, cmdVinculados, isAdmin, fmtUntil, COMMANDS };
