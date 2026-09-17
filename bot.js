@@ -2,10 +2,9 @@
 // HaxOne Plus — bot de Discord.
 // Comandos (solo admins):
 //   /addplus usuario:<@persona> [dias:<n>]
-//       Da el rol Plus + registra la licencia con su nombre de Discord
-//       (tiene que jugar con ese nick). dias=0 (default) = permanente.
-//   /plusnick usuario:<@persona> nick:<nuevo>
-//       Cambia el nick vinculado (si se lo cambio en Discord o HaxBall).
+//       Da el rol Plus + registra la licencia en su cuenta de Discord
+//       (despues vincula la cuenta en la app, sin depender del nick).
+//       dias=0 (default) = permanente.
 //   /removeplus usuario:<@persona>
 //       Saca el rol + desactiva su licencia.
 //   /plusinfo [usuario] [nick]
@@ -26,13 +25,6 @@ const COMMANDS = [
     .setDescription('Dar Plus a un usuario (cobro manual ya recibido)')
     .addUserOption(o => o.setName('usuario').setDescription('Persona a la que das Plus (@)').setRequired(true))
     .addIntegerOption(o => o.setName('dias').setDescription('Duracion en dias, 0 = permanente (default)').setRequired(false).setMinValue(0).setMaxValue(3650))
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-    .toJSON(),
-  new SlashCommandBuilder()
-    .setName('plusnick')
-    .setDescription('Cambiar el nick vinculado al Plus de alguien')
-    .addUserOption(o => o.setName('usuario').setDescription('Persona (@)').setRequired(true))
-    .addStringOption(o => o.setName('nick').setDescription('Nuevo nick de HaxBall').setRequired(true))
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .toJSON(),
   new SlashCommandBuilder()
@@ -109,7 +101,6 @@ async function startBot(store) {
       }
       const name = interaction.commandName;
       if (name === 'addplus') await cmdAddPlus(interaction, store, plusRoleId);
-      else if (name === 'plusnick') await cmdPlusNick(interaction, store, plusRoleId);
       else if (name === 'removeplus') await cmdRemovePlus(interaction, store, plusRoleId);
       else if (name === 'plusinfo') await cmdPlusInfo(interaction, store);
       else if (name === 'pluslist') await cmdPlusList(interaction, store);
@@ -130,31 +121,17 @@ async function startBot(store) {
 
 async function cmdAddPlus(interaction, store, plusRoleId) {
   const user = interaction.options.getUser('usuario', true);
-  // El nick sale siempre del Discord (sin campo manual): apodo del servidor
-  // o nombre de usuario. Tiene que jugar con ese nick en HaxBall.
-  let nick = '';
   let dias = 0;
   try { dias = interaction.options.getInteger('dias') || 0; } catch (e) { dias = 0; }
   await interaction.deferReply({ ephemeral: true });
   try {
-    const guild = interaction.guild;
-    let member = null;
-    try { member = guild ? await guild.members.fetch(user.id) : null; } catch (e) { member = null; }
-    if (member) {
-      try { nick = String((member.nickname || member.user.username) || '').trim(); } catch (e) { nick = ''; }
-    }
-    if (!nick) {
-      try { nick = String((user && user.username) || '').trim(); } catch (e2) { nick = ''; }
-    }
-    if (!nick) {
-      await interaction.editReply('No pude detectar su nombre de Discord.');
-      return;
-    }
-    const rec = store.upsert({ nick, discordId: user.id, discordName: user.username, days: dias });
+    const rec = store.upsertByDiscordId({ discordId: user.id, discordName: user.username, days: dias });
     if (!rec) {
-      await interaction.editReply('Nick invalido.');
+      await interaction.editReply('No se pudo registrar.');
       return;
     }
+    let member = null;
+    try { member = interaction.guild ? await interaction.guild.members.fetch(user.id) : null; } catch (e) { member = null; }
     let roleOk = false;
     if (member && plusRoleId) {
       try { await member.roles.add(plusRoleId, 'HaxOne Plus activado'); roleOk = true; } catch (e) { roleOk = false; }
@@ -163,64 +140,21 @@ async function cmdAddPlus(interaction, store, plusRoleId) {
       .setTitle('Plus activado')
       .addFields(
         { name: 'Usuario', value: '<@' + user.id + '>', inline: true },
-        { name: 'Nick HaxBall', value: '`' + rec.nick + '`', inline: true },
-        { name: 'Hasta', value: fmtUntil(rec.until), inline: true }
+        { name: 'Hasta', value: fmtUntil(rec.until), inline: true },
+        { name: 'Vincular', value: 'En HaxOne: pestana Plus, boton Vincular con Discord.', inline: false }
       )
       .setFooter({ text: roleOk ? 'Rol Plus dado.' : 'OJO: no pude dar el rol (revisa PLUS_ROLE_ID y mis permisos).' })
       .setTimestamp(new Date());
     await interaction.editReply({ embeds: [emb] });
-    // Aviso por MD al comprador.
     try {
       await user.send(
-        'Tu **HaxOne Plus** esta activo para el nick **' + rec.nick + '** (' + fmtUntil(rec.until) + ').\n' +
-        'Abri HaxOne con ese nick y la pestana Plus se desbloquea sola.\n' +
-        'IMPORTANTE: juga siempre con ese nick, si lo cambias el Plus se bloquea.'
+        'Tu **HaxOne Plus** esta activo (' + fmtUntil(rec.until) + ').\n' +
+        'Vincula tu cuenta: abri HaxOne, pestaña Plus, botón **Vincular con Discord**, autoriza y pegá el código.\n' +
+        'Desde ahí el Plus sigue a tu cuenta, no a tu nick.'
       );
     } catch (e) { /* MD cerrados: no pasa nada */ }
   } catch (e) {
     await interaction.editReply('No se pudo activar: ' + (e && e.message ? e.message : e));
-  }
-}
-
-async function cmdPlusNick(interaction, store, plusRoleId) {
-  const user = interaction.options.getUser('usuario', true);
-  let nick = '';
-  try { nick = String(interaction.options.getString('nick') || '').trim(); } catch (e) { nick = ''; }
-  await interaction.deferReply({ ephemeral: true });
-  try {
-    if (!nick) {
-      await interaction.editReply('Pasame el nuevo nick: `/plusnick usuario:@x nick:NuevoNick`.');
-      return;
-    }
-    // Conservar la vigencia que le quedaba (si era por dias).
-    let daysLeft = 0;
-    try {
-      const all = store.list();
-      const prev = all.find((r) => String(r.discordId) === String(user.id) && store.isActive(r, Date.now())) || null;
-      if (prev && prev.until && prev.until > 0) {
-        daysLeft = Math.max(0, Math.ceil((prev.until - Date.now()) / (24 * 3600 * 1000)));
-      }
-    } catch (eP) { daysLeft = 0; }
-    try { store.deactivateByDiscordId(user.id); } catch (eD) {}
-    const rec = store.upsert({ nick, discordId: user.id, discordName: user.username, days: daysLeft });
-    if (!rec) {
-      await interaction.editReply('Nick invalido.');
-      return;
-    }
-    let member = null;
-    try { member = interaction.guild ? await interaction.guild.members.fetch(user.id) : null; } catch (e) { member = null; }
-    if (member && plusRoleId) {
-      try {
-        const has = member.roles && member.roles.cache ? member.roles.cache.has(plusRoleId) : false;
-        if (!has) await member.roles.add(plusRoleId, 'HaxOne Plus (cambio de nick)');
-      } catch (eR) {}
-    }
-    await interaction.editReply('Nick actualizado: <@' + user.id + '> ahora juega como `' + rec.nick + '` (' + fmtUntil(rec.until) + ').');
-    try {
-      await user.send('Tu **HaxOne Plus** ahora esta vinculado al nick **' + rec.nick + '**. Abri HaxOne con ese nick.');
-    } catch (eDM) {}
-  } catch (e) {
-    await interaction.editReply('No se pudo cambiar: ' + (e && e.message ? e.message : e));
   }
 }
 
@@ -302,4 +236,4 @@ async function sweepAndClean(client, store, plusRoleId) {
   } catch (e) {}
 }
 
-module.exports = { startBot, cmdAddPlus, cmdPlusNick, cmdRemovePlus, cmdPlusInfo, cmdPlusList, isAdmin, fmtUntil, COMMANDS };
+module.exports = { startBot, cmdAddPlus, cmdRemovePlus, cmdPlusInfo, cmdPlusList, isAdmin, fmtUntil, COMMANDS };

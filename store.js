@@ -27,9 +27,12 @@ function load() {
   try {
     const raw = fs.readFileSync(fp, 'utf8');
     const m = JSON.parse(raw);
-    if (m && typeof m === 'object' && m.licenses && typeof m.licenses === 'object') return m;
+    if (m && typeof m === 'object' && m.licenses && typeof m.licenses === 'object') {
+      if (!m.codes || typeof m.codes !== 'object') m.codes = {};
+      return m;
+    }
   } catch (e) { /* no existe o corrupto: se empieza vacio */ }
-  return { licenses: {} };
+  return { licenses: {}, codes: {} };
 }
 
 function save(db) {
@@ -126,4 +129,64 @@ function sweepExpired(now) {
   return out;
 }
 
-module.exports = { normNick, get, isActive, upsert, deactivate, deactivateByDiscordId, list, sweepExpired };
+function keyForDiscord(discordId) { return 'id:' + String(discordId || ''); }
+
+function getByDiscordId(discordId) {
+  try {
+    const id = String(discordId || '');
+    if (!id) return null;
+    const direct = get(keyForDiscord(id));
+    if (direct) return direct;
+    // Migracion: licencias viejas con clave por nick.
+    const all = db.licenses || {};
+    for (const k of Object.keys(all)) {
+      try { if (all[k] && String(all[k].discordId) === id) return all[k]; } catch (e) {}
+    }
+  } catch (e) {}
+  return null;
+}
+
+function upsertByDiscordId({ discordId, discordName, days }) {
+  const id = String(discordId || '');
+  if (!id) return null;
+  const now = Date.now();
+  const prev = getByDiscordId(id);
+  let until = 0;
+  try {
+    const d = parseInt(days, 10);
+    if (d > 0) until = now + d * 24 * 3600 * 1000;
+  } catch (e) { until = 0; }
+  const rec = {
+    nick: (prev && prev.nick) || '',
+    discordId: id,
+    discordName: String(discordName || (prev && prev.discordName) || ''),
+    active: true,
+    since: (prev && prev.since) || now,
+    until
+  };
+  db.licenses[keyForDiscord(id)] = rec;
+  save(db);
+  return rec;
+}
+
+const LINKABC = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+function createLinkCode(discordId, discordName) {
+  try {
+    let code = 'HX-';
+    for (let i = 0; i < 6; i++) code += LINKABC[Math.floor(Math.random() * LINKABC.length)];
+    if (!db.codes || typeof db.codes !== 'object') db.codes = {};
+    db.codes[code] = { discordId: String(discordId || ''), username: String(discordName || ''), created: Date.now() };
+    save(db);
+    return code;
+  } catch (e) { return ''; }
+}
+
+function getLinkCode(code) {
+  try {
+    const c = String(code || '').trim().toUpperCase();
+    if (!c || !db.codes || typeof db.codes !== 'object') return null;
+    return db.codes[c] || null;
+  } catch (e) { return null; }
+}
+
+module.exports = { normNick, get, isActive, upsert, deactivate, deactivateByDiscordId, list, sweepExpired, keyForDiscord, getByDiscordId, upsertByDiscordId, createLinkCode, getLinkCode };
