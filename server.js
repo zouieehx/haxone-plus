@@ -151,6 +151,24 @@ function createServer(store) {
     }
   });
 
+  // Estado de baneo: ?nick= y/o ?code= (el codigo resuelve la cuenta).
+  app.get('/plus/ban-status', (req, res) => {
+    try {
+      const nick = String((req.query && req.query.nick) || '');
+      const code = String((req.query && req.query.code) || '').trim();
+      let discordId = '';
+      if (code) {
+        try {
+          const c = store.getLinkCode(code);
+          if (c && c.discordId) discordId = c.discordId;
+        } catch (e) {}
+      }
+      res.json(store.banStatus({ nick, discordId }));
+    } catch (e) {
+      res.json({ banned: false });
+    }
+  });
+
   return app;
 }
 

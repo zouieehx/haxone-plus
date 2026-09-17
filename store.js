@@ -29,10 +29,13 @@ function load() {
     const m = JSON.parse(raw);
     if (m && typeof m === 'object' && m.licenses && typeof m.licenses === 'object') {
       if (!m.codes || typeof m.codes !== 'object') m.codes = {};
+      if (!m.bans || typeof m.bans !== 'object') m.bans = { nicks: {}, ids: {} };
+      if (!m.bans.nicks || typeof m.bans.nicks !== 'object') m.bans.nicks = {};
+      if (!m.bans.ids || typeof m.bans.ids !== 'object') m.bans.ids = {};
       return m;
     }
   } catch (e) { /* no existe o corrupto: se empieza vacio */ }
-  return { licenses: {}, codes: {} };
+  return { licenses: {}, codes: {}, bans: { nicks: {}, ids: {} } };
 }
 
 function save(db) {
@@ -189,4 +192,103 @@ function getLinkCode(code) {
   } catch (e) { return null; }
 }
 
-module.exports = { normNick, get, isActive, upsert, deactivate, deactivateByDiscordId, list, sweepExpired, keyForDiscord, getByDiscordId, upsertByDiscordId, createLinkCode, getLinkCode };
+function banAlive(rec, now) {
+  try {
+    if (!rec || rec.active === false) return false;
+    const t = now || Date.now();
+    if (rec.until && rec.until > 0 && rec.until <= t) return false;
+    return true;
+  } catch (e) { return false; }
+}
+
+function banNick(nick, reason, by, days) {
+  const norm = normNick(nick);
+  if (!norm) return null;
+  const now = Date.now();
+  let until = 0;
+  try {
+    const d = parseInt(days, 10);
+    if (d > 0) until = now + d * 24 * 3600 * 1000;
+  } catch (e) { until = 0; }
+  if (!db.bans) db.bans = { nicks: {}, ids: {} };
+  db.bans.nicks[norm] = { nick: String(nick).replace(/\s+/g, ' ').trim(), reason: String(reason || ''), by: String(by || ''), active: true, since: now, until };
+  save(db);
+  return db.bans.nicks[norm];
+}
+
+function unbanNick(nick) {
+  try {
+    const norm = normNick(nick);
+    if (db.bans && db.bans.nicks && db.bans.nicks[norm]) {
+      db.bans.nicks[norm].active = false;
+      save(db);
+      return true;
+    }
+  } catch (e) {}
+  return false;
+}
+
+function banId(discordId, reason, by, days) {
+  const id = String(discordId || '');
+  if (!id) return null;
+  const now = Date.now();
+  let until = 0;
+  try {
+    const d = parseInt(days, 10);
+    if (d > 0) until = now + d * 24 * 3600 * 1000;
+  } catch (e) { until = 0; }
+  if (!db.bans) db.bans = { nicks: {}, ids: {} };
+  db.bans.ids[id] = { reason: String(reason || ''), by: String(by || ''), active: true, since: now, until };
+  save(db);
+  return db.bans.ids[id];
+}
+
+function unbanId(discordId) {
+  try {
+    const id = String(discordId || '');
+    if (db.bans && db.bans.ids && db.bans.ids[id]) {
+      db.bans.ids[id].active = false;
+      save(db);
+      return true;
+    }
+  } catch (e) {}
+  return false;
+}
+
+// Estado de baneo: primero por cuenta vinculada, despues por nick.
+function banStatus({ nick, discordId }) {
+  const now = Date.now();
+  try {
+    const id = String(discordId || '');
+    if (id && db.bans && db.bans.ids && banAlive(db.bans.ids[id], now)) {
+      return { banned: true, type: 'account', reason: db.bans.ids[id].reason || '' };
+    }
+  } catch (e) {}
+  try {
+    const norm = normNick(nick);
+    if (norm && db.bans && db.bans.nicks && banAlive(db.bans.nicks[norm], now)) {
+      return { banned: true, type: 'nick', reason: db.bans.nicks[norm].reason || '' };
+    }
+  } catch (e) {}
+  return { banned: false };
+}
+
+function sweepBans(now) {
+  const t = now || Date.now();
+  let n = 0;
+  try {
+    if (db.bans) {
+      for (const bag of [db.bans.nicks, db.bans.ids]) {
+        if (!bag) continue;
+        for (const k of Object.keys(bag)) {
+          const r = bag[k];
+          if (r && r.active !== false && r.until && r.until > 0 && r.until <= t) { r.active = false; n++; }
+        }
+      }
+      if (n) save(db);
+    }
+  } catch (e) {}
+  return n;
+}
+
+module.exports = { normNick, get, isActive, upsert, deactivate, deactivateByDiscordId, list, sweepExpired, keyForDiscord, getByDiscordId, upsertByDiscordId, createLinkCode, getLinkCode, banAlive, banNick, unbanNick, banId, unbanId, banStatus, sweepBans };

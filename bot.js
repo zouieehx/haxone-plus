@@ -11,6 +11,10 @@
 //       Muestra si tiene Plus, hasta cuando y con que nick.
 //   /pluslist
 //       Lista los Plus activos (ultimos 25).
+//   /blacklist [usuario] [nick] [motivo] [dias]
+//       Bloquea la app (no puede entrar a jugar). Por cuenta y/o nick.
+//   /unblacklist [usuario] [nick]
+//       Quita el bloqueo.
 // Flujo de cobro manual: te pagan por tu alias, vos corres /addplus y listo.
 // Cuando el Plus vence (si pusiste dias), el bot solo le saca el rol y la
 // app se le bloquea sola en la proxima verificacion.
@@ -43,6 +47,22 @@ const COMMANDS = [
   new SlashCommandBuilder()
     .setName('pluslist')
     .setDescription('Listar licencias Plus activas')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('blacklist')
+    .setDescription('Bloquear a alguien de la app (no puede entrar a jugar)')
+    .addUserOption(o => o.setName('usuario').setDescription('Por cuenta de Discord (@)').setRequired(false))
+    .addStringOption(o => o.setName('nick').setDescription('Por nick de HaxBall').setRequired(false))
+    .addStringOption(o => o.setName('motivo').setDescription('Motivo (lo ve el bloqueado)').setRequired(false))
+    .addIntegerOption(o => o.setName('dias').setDescription('Duracion en dias, 0 = permanente (default)').setRequired(false).setMinValue(0).setMaxValue(3650))
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('unblacklist')
+    .setDescription('Desbloquear a alguien de la app')
+    .addUserOption(o => o.setName('usuario').setDescription('Por cuenta de Discord (@)').setRequired(false))
+    .addStringOption(o => o.setName('nick').setDescription('Por nick de HaxBall').setRequired(false))
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .toJSON()
 ];
@@ -104,6 +124,8 @@ async function startBot(store) {
       else if (name === 'removeplus') await cmdRemovePlus(interaction, store, plusRoleId);
       else if (name === 'plusinfo') await cmdPlusInfo(interaction, store);
       else if (name === 'pluslist') await cmdPlusList(interaction, store);
+      else if (name === 'blacklist') await cmdBlacklist(interaction, store);
+      else if (name === 'unblacklist') await cmdUnblacklist(interaction, store);
     } catch (e) {
       try {
         if (interaction.deferred || interaction.replied) await interaction.followUp({ content: 'Error interno.', ephemeral: true });
@@ -217,7 +239,66 @@ async function cmdPlusList(interaction, store) {
   }
 }
 
+function banTarget(interaction) {
+  // Devuelve { user, nick } con lo que haya pasado (al menos uno).
+  let user = null, nick = '';
+  try { user = interaction.options.getUser('usuario', false); } catch (e) { user = null; }
+  try { nick = String(interaction.options.getString('nick') || '').trim(); } catch (e) { nick = ''; }
+  return { user, nick };
+}
+
+async function cmdBlacklist(interaction, store) {
+  const { user, nick } = banTarget(interaction);
+  let motivo = '', dias = 0;
+  try { motivo = String(interaction.options.getString('motivo') || '').trim(); } catch (e) { motivo = ''; }
+  try { dias = interaction.options.getInteger('dias') || 0; } catch (e) { dias = 0; }
+  await interaction.deferReply({ ephemeral: true });
+  try {
+    if (!user && !nick) {
+      await interaction.editReply('Pasame `usuario` o `nick`: `/blacklist usuario:@x` o `/blacklist nick:Name`.');
+      return;
+    }
+    const by = interaction.user ? String(interaction.user.username || '') : '';
+    const parts = [];
+    if (user) {
+      const r = store.banId(user.id, motivo, by, dias);
+      if (r) parts.push('cuenta <@' + user.id + '>');
+      try {
+        await user.send('Fuiste **bloqueado de HaxOne**' + (motivo ? ' (' + motivo + ')' : '') + '. Habla con un admin en Discord.');
+      } catch (eDM) {}
+    }
+    if (nick) {
+      const r = store.banNick(nick, motivo, by, dias);
+      if (r) parts.push('nick `' + r.nick + '`');
+    }
+    if (!parts.length) { await interaction.editReply('No se pudo bloquear.'); return; }
+    const until = dias > 0 ? (' hasta ' + fmtUntil(Date.now() + dias * 24 * 3600 * 1000)) : ' (permanente)';
+    await interaction.editReply('Bloqueado: ' + parts.join(' + ') + until + (motivo ? ' — ' + motivo : ''));
+  } catch (e) {
+    await interaction.editReply('Error: ' + (e && e.message ? e.message : e));
+  }
+}
+
+async function cmdUnblacklist(interaction, store) {
+  const { user, nick } = banTarget(interaction);
+  await interaction.deferReply({ ephemeral: true });
+  try {
+    if (!user && !nick) {
+      await interaction.editReply('Pasame `usuario` o `nick`.');
+      return;
+    }
+    const parts = [];
+    if (user && store.unbanId(user.id)) parts.push('cuenta <@' + user.id + '>');
+    if (nick && store.unbanNick(nick)) parts.push('nick `' + String(nick).replace(/\s+/g, ' ').trim() + '`');
+    if (!parts.length) { await interaction.editReply('No tenia bloqueo registrado.'); return; }
+    await interaction.editReply('Desbloqueado: ' + parts.join(' + ') + '.');
+  } catch (e) {
+    await interaction.editReply('Error: ' + (e && e.message ? e.message : e));
+  }
+}
+
 async function sweepAndClean(client, store, plusRoleId) {
+  try { store.sweepBans(Date.now()); } catch (e) {}
   try {
     const expired = store.sweepExpired(Date.now());
     if (!expired.length || !plusRoleId) return;
@@ -236,4 +317,4 @@ async function sweepAndClean(client, store, plusRoleId) {
   } catch (e) {}
 }
 
-module.exports = { startBot, cmdAddPlus, cmdRemovePlus, cmdPlusInfo, cmdPlusList, isAdmin, fmtUntil, COMMANDS };
+module.exports = { startBot, cmdAddPlus, cmdRemovePlus, cmdPlusInfo, cmdPlusList, cmdBlacklist, cmdUnblacklist, isAdmin, fmtUntil, COMMANDS };
